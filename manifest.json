@@ -1,0 +1,15 @@
+{
+  "name": "Claudiya",
+  "short_name": "Claudiya",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#17181a",
+  "theme_color": "#1a1a1a",
+  "icons": [
+    {
+      "src": "/static/icon.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
