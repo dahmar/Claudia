@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
 <title>Claudiya</title>
-<link rel="manifest" href="/static/manifest.json" />
+<link rel="manifest" href="/manifest.json" />
 <meta name="theme-color" content="#1a1a1a" />
 <style>
   * { box-sizing: border-box; }
@@ -230,7 +230,7 @@
 
   // Регистрируем service worker для PWA (офлайн-оболочка, не офлайн-чат)
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('/static/sw.js').catch(() => {});
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
   }
 </script>
 </body>
