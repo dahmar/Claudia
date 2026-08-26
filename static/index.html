@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
-<title>Claudiya</title>
-<link rel="manifest" href="/manifest.json" />
+<title>Claudia</title>
+<link rel="manifest" href="/static/manifest.json" />
 <meta name="theme-color" content="#1a1a1a" />
 <style>
   * { box-sizing: border-box; }
@@ -89,6 +89,64 @@
   .msg.pending {
     opacity: 0.5;
   }
+  .change-card {
+    align-self: flex-start;
+    max-width: 92%;
+    background: #1e2b23;
+    border: 1px solid #2f4436;
+    border-radius: 12px;
+    padding: 12px;
+    font-size: 13px;
+  }
+  .change-card .change-path {
+    font-family: "SF Mono", Consolas, monospace;
+    font-weight: 600;
+    margin-bottom: 6px;
+    color: #9fd9b4;
+  }
+  .change-card .change-commit-msg {
+    color: #8a8d87;
+    margin-bottom: 8px;
+    font-style: italic;
+  }
+  .change-card pre {
+    background: #131415;
+    padding: 8px;
+    border-radius: 6px;
+    overflow-x: auto;
+    max-height: 240px;
+    font-size: 12px;
+    margin: 0 0 8px 0;
+  }
+  .change-card .diff-add { color: #7ee0a0; }
+  .change-card .diff-remove { color: #e07e7e; text-decoration: line-through; opacity: 0.7; }
+  .change-actions {
+    display: flex;
+    gap: 8px;
+  }
+  .change-actions button {
+    flex: 1;
+    border: none;
+    border-radius: 8px;
+    padding: 8px;
+    font-size: 13px;
+    font-weight: 500;
+  }
+  .btn-apply {
+    background: #3d7a54;
+    color: white;
+  }
+  .btn-discard {
+    background: #3a3b3e;
+    color: #d0cec9;
+  }
+  .change-card.resolved {
+    opacity: 0.55;
+  }
+  .change-card .resolved-label {
+    font-size: 12px;
+    color: #8a8d87;
+  }
   #input-bar {
     display: flex;
     gap: 8px;
@@ -120,6 +178,87 @@
   #input-bar button:disabled {
     opacity: 0.4;
   }
+  #settings-btn {
+    background: none;
+    border: 1px solid #3a3b3e;
+    color: #a9a7a2;
+    font-size: 14px;
+    padding: 6px 10px;
+    border-radius: 6px;
+  }
+  .modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.6);
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    z-index: 100;
+  }
+  .modal {
+    background: #1e1f21;
+    border-radius: 16px 16px 0 0;
+    padding: 20px;
+    width: 100%;
+    max-width: 480px;
+    max-height: 70vh;
+    overflow-y: auto;
+  }
+  .modal h2 {
+    font-size: 16px;
+    margin: 0 0 14px 0;
+  }
+  .provider-option {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px;
+    border: 1px solid #35363a;
+    border-radius: 10px;
+    margin-bottom: 8px;
+  }
+  .provider-option.active {
+    border-color: #3d7a54;
+    background: #1e2b23;
+  }
+  .provider-option .provider-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .provider-option .provider-label {
+    font-size: 14px;
+    font-weight: 500;
+  }
+  .provider-option .provider-model {
+    font-size: 12px;
+    color: #8a8d87;
+    font-family: "SF Mono", Consolas, monospace;
+  }
+  .provider-option .provider-status {
+    font-size: 11px;
+    padding: 3px 8px;
+    border-radius: 20px;
+  }
+  .provider-status.configured {
+    background: #1e2b23;
+    color: #7ee0a0;
+  }
+  .provider-status.not-configured {
+    background: #3a2b2b;
+    color: #e0a07e;
+  }
+  .provider-option button {
+    background: #3a4a5c;
+    color: white;
+    border: none;
+    border-radius: 8px;
+    padding: 6px 12px;
+    font-size: 12px;
+  }
+  .provider-option button:disabled {
+    opacity: 0.3;
+  }
   #empty-state {
     margin: auto;
     text-align: center;
@@ -132,12 +271,24 @@
 <body>
 <div id="app">
   <header>
-    <h1><span class="dot"></span>Claudiya</h1>
-    <button id="reset-btn">Очистить</button>
+    <h1><span class="dot"></span>Claudia</h1>
+    <div style="display:flex; gap:8px;">
+      <button id="settings-btn">⚙️</button>
+      <button id="reset-btn">Очистить</button>
+    </div>
   </header>
   <div id="messages">
     <div id="empty-state">Личный ассистент по разработке MakeApp.<br/>Напиши, с чем помочь.</div>
   </div>
+
+  <div id="settings-modal" class="modal-overlay" style="display:none;">
+    <div class="modal">
+      <h2>Провайдер модели</h2>
+      <div id="provider-list"></div>
+      <button id="settings-close-btn" class="btn-discard" style="margin-top:12px; width:100%;">Закрыть</button>
+    </div>
+  </div>
+
   <div id="input-bar">
     <textarea id="input" rows="1" placeholder="Сообщение..."></textarea>
     <button id="send-btn">→</button>
@@ -150,6 +301,78 @@
   const sendBtn = document.getElementById('send-btn');
   const resetBtn = document.getElementById('reset-btn');
   const emptyState = document.getElementById('empty-state');
+
+  const settingsBtn = document.getElementById('settings-btn');
+  const settingsModal = document.getElementById('settings-modal');
+  const settingsCloseBtn = document.getElementById('settings-close-btn');
+  const providerListEl = document.getElementById('provider-list');
+
+  async function loadSettings() {
+    try {
+      const res = await fetch('/api/settings');
+      const data = await res.json();
+      renderProviderList(data);
+    } catch (err) {
+      providerListEl.innerHTML = `<p style="color:#e07e7e;">Не удалось загрузить настройки: ${escapeHtml(err.message)}</p>`;
+    }
+  }
+
+  function renderProviderList(data) {
+    providerListEl.innerHTML = '';
+    data.providers.forEach(p => {
+      const isActive = p.id === data.active_provider;
+      const row = document.createElement('div');
+      row.className = 'provider-option' + (isActive ? ' active' : '');
+      row.innerHTML = `
+        <div class="provider-info">
+          <span class="provider-label">${escapeHtml(p.label)}</span>
+          <span class="provider-model">${escapeHtml(isActive ? data.active_model : p.default_model)}</span>
+        </div>
+        <div style="display:flex; align-items:center; gap:8px;">
+          <span class="provider-status ${p.configured ? 'configured' : 'not-configured'}">
+            ${p.configured ? 'ключ есть' : 'нет ключа'}
+          </span>
+          ${isActive ? '' : `<button ${p.configured ? '' : 'disabled'}>Выбрать</button>`}
+        </div>
+      `;
+      if (!isActive) {
+        const btn = row.querySelector('button');
+        if (btn) {
+          btn.addEventListener('click', () => switchProvider(p.id));
+        }
+      }
+      providerListEl.appendChild(row);
+    });
+  }
+
+  async function switchProvider(providerId) {
+    try {
+      const res = await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider: providerId })
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        alert('Ошибка: ' + (err.error || 'не удалось переключить'));
+        return;
+      }
+      loadSettings();
+    } catch (err) {
+      alert('Ошибка сети: ' + err.message);
+    }
+  }
+
+  settingsBtn.addEventListener('click', () => {
+    settingsModal.style.display = 'flex';
+    loadSettings();
+  });
+  settingsCloseBtn.addEventListener('click', () => {
+    settingsModal.style.display = 'none';
+  });
+  settingsModal.addEventListener('click', (e) => {
+    if (e.target === settingsModal) settingsModal.style.display = 'none';
+  });
 
   function autoResize() {
     inputEl.style.height = 'auto';
@@ -180,6 +403,54 @@
     return div;
   }
 
+  function renderChangeCard(change) {
+    if (emptyState) emptyState.remove();
+    const card = document.createElement('div');
+    card.className = 'change-card';
+    card.dataset.changeId = change.change_id;
+
+    const preview = change.new_content.length > 3000
+      ? change.new_content.slice(0, 3000) + '\n... (обрезано для показа)'
+      : change.new_content;
+
+    card.innerHTML = `
+      <div class="change-path">📝 ${escapeHtml(change.path)}</div>
+      <div class="change-commit-msg">${escapeHtml(change.commit_message)}</div>
+      <pre><code>${escapeHtml(preview)}</code></pre>
+      <div class="change-actions">
+        <button class="btn-apply">Применить</button>
+        <button class="btn-discard">Отклонить</button>
+      </div>
+    `;
+
+    card.querySelector('.btn-apply').addEventListener('click', () => resolveChange(change.change_id, card, 'apply'));
+    card.querySelector('.btn-discard').addEventListener('click', () => resolveChange(change.change_id, card, 'discard'));
+
+    messagesEl.appendChild(card);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
+  async function resolveChange(changeId, card, action) {
+    const buttons = card.querySelectorAll('button');
+    buttons.forEach(b => b.disabled = true);
+
+    try {
+      const res = await fetch(`/api/${action === 'apply' ? 'apply-change' : 'discard-change'}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ change_id: changeId })
+      });
+      const data = await res.json();
+
+      card.classList.add('resolved');
+      const actionsDiv = card.querySelector('.change-actions');
+      actionsDiv.innerHTML = `<span class="resolved-label">${escapeHtml(data.result)}</span>`;
+    } catch (err) {
+      buttons.forEach(b => b.disabled = false);
+      alert('Ошибка: ' + err.message);
+    }
+  }
+
   async function sendMessage() {
     const text = inputEl.value.trim();
     if (!text) return;
@@ -201,6 +472,10 @@
       pendingEl.classList.remove('pending');
       pendingEl.innerHTML = renderMarkdownLite(data.answer);
       messagesEl.scrollTop = messagesEl.scrollHeight;
+
+      if (data.proposed_changes && data.proposed_changes.length > 0) {
+        data.proposed_changes.forEach(renderChangeCard);
+      }
     } catch (err) {
       pendingEl.classList.remove('pending');
       pendingEl.textContent = 'Ошибка сети: ' + err.message;
@@ -230,7 +505,7 @@
 
   // Регистрируем service worker для PWA (офлайн-оболочка, не офлайн-чат)
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('/sw.js').catch(() => {});
+    navigator.serviceWorker.register('/static/sw.js').catch(() => {});
   }
 </script>
 </body>
