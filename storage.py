@@ -135,4 +135,9 @@ def set_setting(key: str, value: str) -> None:
         )
 
 
+def delete_setting(key: str) -> None:
+    with _connect() as conn:
+        conn.execute("DELETE FROM settings WHERE key = ?", (key,))
+
+
 init_db()

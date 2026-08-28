@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 import github_tools
 import providers
+import secrets_store
 import storage
 
 app = FastAPI(title="Claudia")
@@ -177,6 +178,32 @@ def update_settings(request: SettingsUpdateRequest):
         })
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
+
+
+class ApiKeyRequest(BaseModel):
+    provider: str
+    api_key: str
+
+
+@app.post("/api/settings/api-key")
+def save_api_key(request: ApiKeyRequest):
+    if request.provider not in providers.PROVIDER_CATALOG:
+        return JSONResponse({"error": f"Неизвестный провайдер: {request.provider}"}, status_code=400)
+    if not request.api_key.strip():
+        return JSONResponse({"error": "Ключ не может быть пустым"}, status_code=400)
+
+    secrets_store.save_api_key(request.provider, request.api_key.strip())
+    return JSONResponse({"status": "saved", "provider": request.provider})
+
+
+class DeleteApiKeyRequest(BaseModel):
+    provider: str
+
+
+@app.post("/api/settings/api-key/delete")
+def delete_api_key(request: DeleteApiKeyRequest):
+    secrets_store.delete_api_key(request.provider)
+    return JSONResponse({"status": "deleted", "provider": request.provider})
 
 
 @app.post("/api/reset")
