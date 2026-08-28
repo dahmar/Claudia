@@ -31,7 +31,10 @@ PROVIDER_CATALOG = {
         "label": "OpenRouter",
         "default_model": "anthropic/claude-sonnet-4-5",
         "env_var": "OPENROUTER_API_KEY",
-        "base_url": "https://openrouter.ai/api/v1",
+        # ВАЖНО: для Anthropic SDK (anthropic.Anthropic) нужен путь /api, БЕЗ /v1 —
+        # именно так OpenRouter подключает свой "Anthropic Skin" (нативный формат Messages API).
+        # /api/v1 — это отдельный путь под OpenAI-совместимый формат, для другого SDK.
+        "base_url": "https://openrouter.ai/api",
     },
 }
 

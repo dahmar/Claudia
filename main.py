@@ -125,17 +125,46 @@ def chat(request: ChatRequest):
     except Exception as exc:
         # Откатываем последнее сообщение пользователя, раз ответа не получилось
         storage.pop_last_message()
+
+        # Anthropic SDK кладёт полезную диагностику в атрибуты исключения — достаём их,
+        # а не просто str(exc), который может быть длиннющим HTML от прокси/CDN на пути.
+        error_details = _summarize_api_error(exc)
+
         return JSONResponse(
             {
                 "answer": (
                     "Не удалось получить ответ от модели. "
-                    "Проверь API-ключ выбранного провайдера, баланс или сетевой доступ с сервера. "
-                    f"Ошибка: {exc}"
+                    "Проверь API-ключ выбранного провайдера, баланс или сетевой доступ с сервера.\n\n"
+                    f"{error_details}"
                 ),
                 "proposed_changes": [],
             },
             status_code=200,  # 200, чтобы фронтенд просто показал текст ошибки в чате
         )
+
+
+def _summarize_api_error(exc: Exception) -> str:
+    """
+    Достаёт из исключения компактную диагностику вместо длинного HTML-тела ответа,
+    которое некоторые прокси (в т.ч. CDN перед OpenRouter) отдают на 404/5xx.
+    """
+    parts = [f"Тип ошибки: {type(exc).__name__}"]
+
+    status_code = getattr(exc, "status_code", None)
+    if status_code:
+        parts.append(f"HTTP статус: {status_code}")
+
+    request = getattr(exc, "request", None)
+    if request is not None and getattr(request, "url", None):
+        parts.append(f"URL запроса: {request.url}")
+
+    # Тело ответа может быть JSON с полем error, или длинным HTML — обрежем и то, и то
+    message = str(exc)
+    if len(message) > 500:
+        message = message[:500] + "... (обрезано)"
+    parts.append(f"Сообщение: {message}")
+
+    return "\n".join(parts)
 
 
 class ChangeActionRequest(BaseModel):
