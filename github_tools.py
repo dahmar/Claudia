@@ -1,42 +1,51 @@
 """
-Инструменты для работы с GitHub-репозиторием.
-Используются как tools в Anthropic Messages API — Клавдия сама решает,
-когда прочитать файл или закоммитить изменение.
+Инструменты для работы с GitHub-репозиторием — привязаны к конкретному проекту.
 
-Нужна переменная окружения GITHUB_TOKEN (Personal Access Token с правами repo)
-и GITHUB_REPO в формате "owner/repo", например "maks/devagent".
+Каждый проект хранит свой github_repo (открытым текстом, не секрет) и свой
+github_token (зашифрованным через secrets_store, как и API-ключи моделей).
+Раньше это были глобальные переменные окружения GITHUB_TOKEN/GITHUB_REPO —
+теперь у каждого проекта Claudia могут быть свои, задаются через UI.
 """
 import base64
-import os
 
-import httpx
-
+import secrets_store
 import storage
 
-GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
-GITHUB_REPO = os.environ.get("GITHUB_REPO", "")  # например "maks/devagent"
 GITHUB_API = "https://api.github.com"
 
-HEADERS = {
-    "Authorization": f"Bearer {GITHUB_TOKEN}",
-    "Accept": "application/vnd.github+json",
-    "X-GitHub-Api-Version": "2022-11-28",
-}
 
+def _get_credentials(project_id: str) -> tuple[str, str]:
+    """Возвращает (token, repo) для проекта, либо бросает понятную ошибку."""
+    project = storage.get_project(project_id)
+    if not project:
+        raise RuntimeError(f"Проект {project_id} не найден.")
 
-def _check_config():
-    if not GITHUB_TOKEN or not GITHUB_REPO:
+    repo = project.get("github_repo")
+    token = secrets_store.get_project_github_token(project_id)
+
+    if not repo or not token:
         raise RuntimeError(
-            "GITHUB_TOKEN или GITHUB_REPO не заданы в переменных окружения сервера."
+            "GitHub не настроен для этого проекта. "
+            "Добавь токен и репозиторий в настройках проекта (⚙️ → GitHub)."
         )
+    return token, repo
 
 
-def read_file(path: str, branch: str = "main") -> str:
-    """Читает содержимое файла из репозитория."""
-    _check_config()
-    url = f"{GITHUB_API}/repos/{GITHUB_REPO}/contents/{path}"
+def _headers(token: str) -> dict:
+    return {
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+
+def read_file(project_id: str, path: str, branch: str = "main") -> str:
+    """Читает содержимое файла из репозитория проекта."""
+    import httpx
+    token, repo = _get_credentials(project_id)
+    url = f"{GITHUB_API}/repos/{repo}/contents/{path}"
     with httpx.Client() as client:
-        resp = client.get(url, headers=HEADERS, params={"ref": branch})
+        resp = client.get(url, headers=_headers(token), params={"ref": branch})
     if resp.status_code == 404:
         return f"Файл не найден: {path}"
     resp.raise_for_status()
@@ -45,12 +54,13 @@ def read_file(path: str, branch: str = "main") -> str:
     return content
 
 
-def list_files(path: str = "", branch: str = "main") -> str:
-    """Список файлов и папок в указанной директории репозитория."""
-    _check_config()
-    url = f"{GITHUB_API}/repos/{GITHUB_REPO}/contents/{path}"
+def list_files(project_id: str, path: str = "", branch: str = "main") -> str:
+    """Список файлов и папок в указанной директории репозитория проекта."""
+    import httpx
+    token, repo = _get_credentials(project_id)
+    url = f"{GITHUB_API}/repos/{repo}/contents/{path}"
     with httpx.Client() as client:
-        resp = client.get(url, headers=HEADERS, params={"ref": branch})
+        resp = client.get(url, headers=_headers(token), params={"ref": branch})
     if resp.status_code == 404:
         return f"Путь не найден: {path or '(корень репозитория)'}"
     resp.raise_for_status()
@@ -61,23 +71,24 @@ def list_files(path: str = "", branch: str = "main") -> str:
     return "\n".join(lines) if lines else "Папка пуста"
 
 
-def propose_file_change(path: str, content: str, commit_message: str, branch: str = "main") -> dict:
+def propose_file_change(project_id: str, path: str, content: str, commit_message: str, branch: str = "main") -> dict:
     """
     Не пишет в репозиторий — только готовит предложение изменения и сохраняет
-    его в SQLite. Реальная запись происходит через apply_pending_change,
-    когда пользователь явно подтвердит в интерфейсе. Переживает рестарт сервиса.
+    его в SQLite (привязанным к проекту). Реальная запись происходит через
+    apply_pending_change, когда пользователь явно подтвердит в интерфейсе.
     """
-    _check_config()
-    url = f"{GITHUB_API}/repos/{GITHUB_REPO}/contents/{path}"
+    token, repo = _get_credentials(project_id)
+    url = f"{GITHUB_API}/repos/{repo}/contents/{path}"
 
+    import httpx
     with httpx.Client() as client:
-        existing = client.get(url, headers=HEADERS, params={"ref": branch})
+        existing = client.get(url, headers=_headers(token), params={"ref": branch})
 
     old_content = ""
     if existing.status_code == 200:
         old_content = base64.b64decode(existing.json()["content"]).decode("utf-8")
 
-    change_id = storage.save_pending_change(path, content, commit_message, branch, old_content)
+    change_id = storage.save_pending_change(project_id, path, content, commit_message, branch, old_content)
 
     return {
         "change_id": change_id,
@@ -89,16 +100,17 @@ def propose_file_change(path: str, content: str, commit_message: str, branch: st
 
 
 def apply_pending_change(change_id: str) -> str:
-    """Реально коммитит ранее предложенное изменение в GitHub."""
-    _check_config()
+    """Реально коммитит ранее предложенное изменение в GitHub (креды берутся из проекта, к которому привязан change)."""
     change = storage.get_pending_change(change_id)
     if not change:
         return "Предложение не найдено — возможно, уже применено, отклонено, или id устарел."
 
-    url = f"{GITHUB_API}/repos/{GITHUB_REPO}/contents/{change['path']}"
+    token, repo = _get_credentials(change["project_id"])
+    url = f"{GITHUB_API}/repos/{repo}/contents/{change['path']}"
 
+    import httpx
     with httpx.Client() as client:
-        existing = client.get(url, headers=HEADERS, params={"ref": change["branch"]})
+        existing = client.get(url, headers=_headers(token), params={"ref": change["branch"]})
         sha = existing.json().get("sha") if existing.status_code == 200 else None
 
         payload = {
@@ -109,7 +121,7 @@ def apply_pending_change(change_id: str) -> str:
         if sha:
             payload["sha"] = sha
 
-        resp = client.put(url, headers=HEADERS, json=payload)
+        resp = client.put(url, headers=_headers(token), json=payload)
 
     if resp.status_code not in (200, 201):
         return f"Ошибка записи файла: {resp.status_code} {resp.text[:300]}"
@@ -127,11 +139,13 @@ def discard_pending_change(change_id: str) -> str:
     return "Предложение не найдено — возможно, уже применено или отклонено."
 
 
-# Описания инструментов в формате Anthropic tool use
+# Описания инструментов в формате Anthropic tool use.
+# project_id НЕ входит в схему — модель не должна его указывать, он подставляется
+# сервером автоматически (см. main.py) из текущего активного проекта пользователя.
 TOOLS = [
     {
         "name": "read_file",
-        "description": "Читает содержимое файла из GitHub-репозитория пользователя.",
+        "description": "Читает содержимое файла из GitHub-репозитория текущего проекта.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -143,7 +157,7 @@ TOOLS = [
     },
     {
         "name": "list_files",
-        "description": "Показывает список файлов и папок в директории репозитория.",
+        "description": "Показывает список файлов и папок в директории репозитория текущего проекта.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -155,7 +169,7 @@ TOOLS = [
     {
         "name": "propose_file_change",
         "description": (
-            "Предлагает изменение файла в GitHub-репозитории — НЕ записывает его сразу. "
+            "Предлагает изменение файла в GitHub-репозитории текущего проекта — НЕ записывает его сразу. "
             "Пользователь увидит diff в интерфейсе и сам нажмёт 'Применить' или 'Отклонить'. "
             "Используй это всегда, когда меняешь существующий код или создаёшь новый файл — "
             "никогда не пиши в репозиторий напрямую."
@@ -174,26 +188,13 @@ TOOLS = [
 ]
 
 
-def execute_tool(name: str, tool_input: dict) -> str:
-    """Роутер: вызывает нужную функцию по имени инструмента из ответа модели."""
+def execute_tool(project_id: str, name: str, tool_input: dict) -> str:
+    """Роутер: вызывает нужную функцию по имени инструмента из ответа модели, подставляя project_id."""
     try:
         if name == "read_file":
-            return read_file(tool_input["path"], tool_input.get("branch", "main"))
+            return read_file(project_id, tool_input["path"], tool_input.get("branch", "main"))
         if name == "list_files":
-            return list_files(tool_input.get("path", ""), tool_input.get("branch", "main"))
-        if name == "propose_file_change":
-            result = propose_file_change(
-                tool_input["path"],
-                tool_input["content"],
-                tool_input["commit_message"],
-                tool_input.get("branch", "main"),
-            )
-            # Модели возвращаем компактное текстовое подтверждение — полный diff уйдёт
-            # пользователю отдельно, через специальное поле ответа API (см. main.py)
-            return (
-                f"Изменение предложено (id: {result['change_id']}) для файла {result['path']}. "
-                f"Пользователь увидит его в интерфейсе и должен подтвердить применение."
-            )
+            return list_files(project_id, tool_input.get("path", ""), tool_input.get("branch", "main"))
         return f"Неизвестный инструмент: {name}"
     except Exception as exc:
         return f"Ошибка при выполнении {name}: {exc}"
