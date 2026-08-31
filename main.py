@@ -1,8 +1,8 @@
-import os
+import json
 from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -17,10 +17,9 @@ BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 STATIC_DIR.mkdir(parents=True, exist_ok=True)
 
-SYSTEM_PROMPT = (
+SYSTEM_PROMPT_TEMPLATE = (
     "Ты — Claudia, личный ассистент разработчика по имени Макс. "
-    "Ты помогаешь разрабатывать его проекты: MakeApp (AI-агент для вайб-кодинга приложений на smolagents + Qwen Coder), "
-    "а также другие его pet-проекты. "
+    "Ты сейчас работаешь в проекте \"{project_name}\". "
     "У тебя есть доступ к его GitHub-репозиторию через инструменты read_file, list_files, propose_file_change — "
     "используй их, когда нужно посмотреть или изменить реальный код, а не воображать его содержимое. "
     "propose_file_change НЕ применяет изменение сразу — пользователь увидит diff и подтвердит сам. "
@@ -31,6 +30,14 @@ MAX_TOOL_ITERATIONS = 8  # предохранитель от бесконечн�
 # Задел побольше, чтобы обрезка истории не попала внутрь незакрытой пары tool_use/tool_result —
 # Anthropic API требует, чтобы каждый tool_use сразу сопровождался tool_result.
 MAX_HISTORY_MESSAGES = 60
+
+
+def get_active_project_id() -> str:
+    """Читает id активного проекта из настроек, с фоллбеком на первый существующий/дефолтный."""
+    saved = storage.get_setting("active_project_id")
+    if saved and storage.get_project(saved):
+        return saved
+    return storage.get_default_project_id()
 
 
 class ChatRequest(BaseModel):
@@ -48,99 +55,98 @@ def index():
 
 @app.post("/api/chat")
 def chat(request: ChatRequest):
-    storage.append_message("user", request.message)
+    project_id = get_active_project_id()
+    project = storage.get_project(project_id)
+    storage.append_message(project_id, "user", request.message)
 
-    try:
-        tool_log = []  # какие инструменты вызывались — покажем пользователю кратко
-        proposed_changes = []  # изменения, предложенные за этот запрос — уйдут фронтенду отдельно
+    def event_stream():
+        def emit(event: dict):
+            """Каждая строка — отдельный JSON-объект (NDJSON). Держит соединение живым между шагами."""
+            yield json.dumps(event, ensure_ascii=False) + "\n"
 
-        for _ in range(MAX_TOOL_ITERATIONS):
-            history = storage.get_history(MAX_HISTORY_MESSAGES)
-            client = providers.get_client()
-            model = providers.get_active_model()
+        try:
+            proposed_changes = []
+            system_prompt = SYSTEM_PROMPT_TEMPLATE.format(project_name=project["name"])
 
-            response = client.messages.create(
-                model=model,
-                max_tokens=4096,
-                system=SYSTEM_PROMPT,
-                tools=github_tools.TOOLS,
-                messages=history,
+            for _ in range(MAX_TOOL_ITERATIONS):
+                history = storage.get_history(project_id, MAX_HISTORY_MESSAGES)
+                client = providers.get_client()
+                model = providers.get_active_model()
+
+                yield from emit({"type": "status", "text": "Думаю..."})
+
+                response = client.messages.create(
+                    model=model,
+                    max_tokens=4096,
+                    system=system_prompt,
+                    tools=github_tools.TOOLS,
+                    messages=history,
+                )
+
+                if response.stop_reason == "tool_use":
+                    storage.append_message(project_id, "assistant", [block.model_dump() for block in response.content])
+
+                    tool_results = []
+                    for block in response.content:
+                        if block.type == "tool_use":
+                            tool_desc = f"{block.name}({', '.join(f'{k}={v!r}' for k, v in block.input.items() if k != 'content')})"
+                            yield from emit({"type": "tool_call", "text": f"🔧 {tool_desc}"})
+
+                            if block.name == "propose_file_change":
+                                change = github_tools.propose_file_change(
+                                    project_id,
+                                    block.input["path"],
+                                    block.input["content"],
+                                    block.input["commit_message"],
+                                    block.input.get("branch", "main"),
+                                )
+                                proposed_changes.append(change)
+                                yield from emit({"type": "proposed_change", "change": change})
+                                result_text = (
+                                    f"Изменение предложено (id: {change['change_id']}) для файла {change['path']}. "
+                                    f"Пользователь увидит его в интерфейсе и должен подтвердить применение."
+                                )
+                            else:
+                                result_text = github_tools.execute_tool(project_id, block.name, block.input)
+
+                            tool_results.append({
+                                "type": "tool_result",
+                                "tool_use_id": block.id,
+                                "content": result_text,
+                            })
+
+                    storage.append_message(project_id, "user", tool_results)
+                    continue
+
+                answer = "".join(block.text for block in response.content if block.type == "text")
+                storage.append_message(project_id, "assistant", answer)
+
+                yield from emit({"type": "final", "answer": answer})
+                return
+
+            storage.append_message(
+                project_id,
+                "assistant",
+                "Остановилась после нескольких шагов с инструментами — уточни, пожалуйста, задачу.",
             )
+            yield from emit({
+                "type": "final",
+                "answer": "Потребовалось слишком много шагов подряд, я остановилась. Уточни задачу или разбей её на части.",
+            })
 
-            # Модель захотела воспользоваться инструментом
-            if response.stop_reason == "tool_use":
-                storage.append_message("assistant", [block.model_dump() for block in response.content])
-
-                tool_results = []
-                for block in response.content:
-                    if block.type == "tool_use":
-                        tool_log.append(f"🔧 {block.name}({', '.join(f'{k}={v!r}' for k, v in block.input.items() if k != 'content')})")
-
-                        if block.name == "propose_file_change":
-                            # Особый случай: нужен полный diff для интерфейса, а не только текст модели
-                            change = github_tools.propose_file_change(
-                                block.input["path"],
-                                block.input["content"],
-                                block.input["commit_message"],
-                                block.input.get("branch", "main"),
-                            )
-                            proposed_changes.append(change)
-                            result_text = (
-                                f"Изменение предложено (id: {change['change_id']}) для файла {change['path']}. "
-                                f"Пользователь увидит его в интерфейсе и должен подтвердить применение."
-                            )
-                        else:
-                            result_text = github_tools.execute_tool(block.name, block.input)
-
-                        tool_results.append({
-                            "type": "tool_result",
-                            "tool_use_id": block.id,
-                            "content": result_text,
-                        })
-
-                storage.append_message("user", tool_results)
-                continue  # даём модели ещё шанс — либо снова инструмент, либо финальный ответ
-
-            # Обычный финальный текстовый ответ
-            answer = "".join(
-                block.text for block in response.content if block.type == "text"
-            )
-            storage.append_message("assistant", answer)
-
-            if tool_log:
-                answer = "\n".join(tool_log) + "\n\n" + answer
-
-            return JSONResponse({"answer": answer, "proposed_changes": proposed_changes})
-
-        # Слишком много итераций подряд — останавливаемся, чтобы не жечь токены впустую
-        storage.append_message(
-            "assistant",
-            "Остановилась после нескольких шагов с инструментами — уточни, пожалуйста, задачу.",
-        )
-        return JSONResponse({
-            "answer": "Потребовалось слишком много шагов подряд, я остановилась. Уточни задачу или разбей её на части.",
-            "proposed_changes": proposed_changes,
-        })
-
-    except Exception as exc:
-        # Откатываем последнее сообщение пользователя, раз ответа не получилось
-        storage.pop_last_message()
-
-        # Anthropic SDK кладёт полезную диагностику в атрибуты исключения — достаём их,
-        # а не просто str(exc), который может быть длиннющим HTML от прокси/CDN на пути.
-        error_details = _summarize_api_error(exc)
-
-        return JSONResponse(
-            {
+        except Exception as exc:
+            storage.pop_last_message(project_id)
+            error_details = _summarize_api_error(exc)
+            yield from emit({
+                "type": "final",
                 "answer": (
                     "Не удалось получить ответ от модели. "
                     "Проверь API-ключ выбранного провайдера, баланс или сетевой доступ с сервера.\n\n"
                     f"{error_details}"
                 ),
-                "proposed_changes": [],
-            },
-            status_code=200,  # 200, чтобы фронтенд просто показал текст ошибки в чате
-        )
+            })
+
+    return StreamingResponse(event_stream(), media_type="application/x-ndjson")
 
 
 def _summarize_api_error(exc: Exception) -> str:
@@ -182,6 +188,104 @@ def discard_change(request: ChangeActionRequest):
     result = github_tools.discard_pending_change(request.change_id)
     return JSONResponse({"result": result})
 
+
+# ---------- Проекты ----------
+
+@app.get("/api/projects")
+def get_projects():
+    return JSONResponse({
+        "active_project_id": get_active_project_id(),
+        "projects": storage.list_projects(),
+    })
+
+
+class CreateProjectRequest(BaseModel):
+    name: str
+
+
+@app.post("/api/projects")
+def create_project(request: CreateProjectRequest):
+    if not request.name.strip():
+        return JSONResponse({"error": "Имя проекта не может быть пустым"}, status_code=400)
+    project_id = storage.create_project(request.name.strip())
+    return JSONResponse({"project_id": project_id})
+
+
+class SwitchProjectRequest(BaseModel):
+    project_id: str
+
+
+@app.post("/api/projects/switch")
+def switch_project(request: SwitchProjectRequest):
+    if not storage.get_project(request.project_id):
+        return JSONResponse({"error": "Проект не найден"}, status_code=404)
+    storage.set_setting("active_project_id", request.project_id)
+    return JSONResponse({"active_project_id": request.project_id})
+
+
+class RenameProjectRequest(BaseModel):
+    project_id: str
+    name: str
+
+
+@app.post("/api/projects/rename")
+def rename_project(request: RenameProjectRequest):
+    if not request.name.strip():
+        return JSONResponse({"error": "Имя проекта не может быть пустым"}, status_code=400)
+    storage.rename_project(request.project_id, request.name.strip())
+    return JSONResponse({"status": "renamed"})
+
+
+class DeleteProjectRequest(BaseModel):
+    project_id: str
+
+
+@app.post("/api/projects/delete")
+def delete_project(request: DeleteProjectRequest):
+    all_projects = storage.list_projects()
+    if len(all_projects) <= 1:
+        return JSONResponse({"error": "Нельзя удалить единственный проект"}, status_code=400)
+
+    storage.delete_project(request.project_id)
+
+    # Если удалили активный проект — переключаемся на любой оставшийся
+    if get_active_project_id() == request.project_id:
+        remaining = storage.list_projects()
+        storage.set_setting("active_project_id", remaining[0]["id"])
+
+    return JSONResponse({"status": "deleted"})
+
+
+class ProjectGithubRequest(BaseModel):
+    project_id: str
+    github_repo: str
+    github_token: str
+
+
+@app.post("/api/projects/github")
+def set_project_github(request: ProjectGithubRequest):
+    if not storage.get_project(request.project_id):
+        return JSONResponse({"error": "Проект не найден"}, status_code=404)
+    if not request.github_repo.strip() or not request.github_token.strip():
+        return JSONResponse({"error": "Repo и токен не могут быть пустыми"}, status_code=400)
+
+    secrets_store.save_project_github(
+        request.project_id, request.github_repo.strip(), request.github_token.strip()
+    )
+    return JSONResponse({"status": "saved"})
+
+
+class DeleteProjectGithubRequest(BaseModel):
+    project_id: str
+
+
+@app.post("/api/projects/github/delete")
+def delete_project_github(request: DeleteProjectGithubRequest):
+    secrets_store.delete_project_github(request.project_id)
+    return JSONResponse({"status": "deleted"})
+
+
+# ---------- Настройки моделей (общие для всех проектов) ----------
 
 @app.get("/api/settings")
 def get_settings():
@@ -238,14 +342,14 @@ def delete_api_key(request: DeleteApiKeyRequest):
 @app.post("/api/reset")
 def reset(request: ResetRequest):
     if request.confirm:
-        storage.clear_history()
+        storage.clear_history(get_active_project_id())
         return JSONResponse({"status": "cleared"})
     return JSONResponse({"status": "not_cleared"})
 
 
 @app.get("/api/health")
 def health():
-    history_len = len(storage.get_history(limit=10_000))
+    history_len = len(storage.get_history(get_active_project_id(), limit=10_000))
     return JSONResponse({"status": "ok", "history_len": history_len})
 
 
