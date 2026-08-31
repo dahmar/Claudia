@@ -1,3 +1,4 @@
+import asyncio
 import json
 from pathlib import Path
 
@@ -54,16 +55,16 @@ def index():
 
 
 @app.post("/api/chat")
-def chat(request: ChatRequest):
+async def chat(request: ChatRequest):
     project_id = get_active_project_id()
     project = storage.get_project(project_id)
     storage.append_message(project_id, "user", request.message)
 
-    def event_stream():
-        def emit(event: dict):
-            """Каждая строка — отдельный JSON-объект (NDJSON). Держит соединение живым между шагами."""
-            yield json.dumps(event, ensure_ascii=False) + "\n"
+    def _encode(event: dict) -> str:
+        """Каждая строка — отдельный JSON-объект (NDJSON)."""
+        return json.dumps(event, ensure_ascii=False) + "\n"
 
+    async def event_stream():
         try:
             proposed_changes = []
             system_prompt = SYSTEM_PROMPT_TEMPLATE.format(project_name=project["name"])
@@ -73,9 +74,16 @@ def chat(request: ChatRequest):
                 client = providers.get_client()
                 model = providers.get_active_model()
 
-                yield from emit({"type": "status", "text": "Думаю..."})
+                yield _encode({"type": "status", "text": "Думаю..."})
+                # Явно отдаём управление event loop'у, чтобы ASGI-сервер реально
+                # отправил чанк в сокет сейчас, а не после следующего блокирующего вызова.
+                await asyncio.sleep(0)
 
-                response = client.messages.create(
+                # client.messages.create — синхронный (блокирующий) вызов SDK; выполняем его
+                # в отдельном потоке через to_thread, чтобы не блокировать event loop и не
+                # мешать уже отправленным чанкам доходить до клиента вовремя.
+                response = await asyncio.to_thread(
+                    client.messages.create,
                     model=model,
                     max_tokens=4096,
                     system=system_prompt,
@@ -90,7 +98,8 @@ def chat(request: ChatRequest):
                     for block in response.content:
                         if block.type == "tool_use":
                             tool_desc = f"{block.name}({', '.join(f'{k}={v!r}' for k, v in block.input.items() if k != 'content')})"
-                            yield from emit({"type": "tool_call", "text": f"🔧 {tool_desc}"})
+                            yield _encode({"type": "tool_call", "text": f"🔧 {tool_desc}"})
+                            await asyncio.sleep(0)
 
                             if block.name == "propose_file_change":
                                 change = github_tools.propose_file_change(
@@ -101,7 +110,8 @@ def chat(request: ChatRequest):
                                     block.input.get("branch", "main"),
                                 )
                                 proposed_changes.append(change)
-                                yield from emit({"type": "proposed_change", "change": change})
+                                yield _encode({"type": "proposed_change", "change": change})
+                                await asyncio.sleep(0)
                                 result_text = (
                                     f"Изменение предложено (id: {change['change_id']}) для файла {change['path']}. "
                                     f"Пользователь увидит его в интерфейсе и должен подтвердить применение."
@@ -121,7 +131,7 @@ def chat(request: ChatRequest):
                 answer = "".join(block.text for block in response.content if block.type == "text")
                 storage.append_message(project_id, "assistant", answer)
 
-                yield from emit({"type": "final", "answer": answer})
+                yield _encode({"type": "final", "answer": answer})
                 return
 
             storage.append_message(
@@ -129,7 +139,7 @@ def chat(request: ChatRequest):
                 "assistant",
                 "Остановилась после нескольких шагов с инструментами — уточни, пожалуйста, задачу.",
             )
-            yield from emit({
+            yield _encode({
                 "type": "final",
                 "answer": "Потребовалось слишком много шагов подряд, я остановилась. Уточни задачу или разбей её на части.",
             })
@@ -137,7 +147,7 @@ def chat(request: ChatRequest):
         except Exception as exc:
             storage.pop_last_message(project_id)
             error_details = _summarize_api_error(exc)
-            yield from emit({
+            yield _encode({
                 "type": "final",
                 "answer": (
                     "Не удалось получить ответ от модели. "
@@ -146,7 +156,17 @@ def chat(request: ChatRequest):
                 ),
             })
 
-    return StreamingResponse(event_stream(), media_type="application/x-ndjson")
+    return StreamingResponse(
+        event_stream(),
+        media_type="application/x-ndjson",
+        headers={
+            # Многие PaaS-прокси (в т.ч. перед Railway) буферизуют ответ по умолчанию —
+            # эти заголовки просят не копить данные, а отдавать их сразу по мере готовности.
+            "X-Accel-Buffering": "no",
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 def _summarize_api_error(exc: Exception) -> str:
