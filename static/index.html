@@ -687,4 +687,42 @@
 
       pendingEl.classList.remove('pending');
       pendingEl.innerHTML = renderMarkdownLite(fullText);
-      pend
+      pendingEl.dataset.rawText = fullText;
+      pendingEl.appendChild(makeCopyButton(() => pendingEl.dataset.rawText));
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    } catch (err) {
+      pendingEl.classList.remove('pending');
+      pendingEl.textContent = 'Ошибка сети: ' + err.message;
+      pendingEl.dataset.rawText = 'Ошибка сети: ' + err.message;
+      pendingEl.appendChild(makeCopyButton(() => pendingEl.dataset.rawText));
+    } finally {
+      sendBtn.disabled = false;
+    }
+  }
+
+  sendBtn.addEventListener('click', sendMessage);
+  inputEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
+    }
+  });
+
+  resetBtn.addEventListener('click', async () => {
+    if (!confirm('Очистить историю разговора?')) return;
+    await fetch('/api/reset', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirm: true })
+    });
+    messagesEl.innerHTML = '';
+    messagesEl.appendChild(emptyState);
+  });
+
+  // Регистрируем service worker для PWA (офлайн-оболочка, не офлайн-чат)
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/static/sw.js').catch(() => {});
+  }
+</script>
+</body>
+</html>
