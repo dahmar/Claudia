@@ -211,11 +211,13 @@
   .modal {
     background: #1e1f21;
     border-radius: 16px 16px 0 0;
-    padding: 20px;
+    padding: 16px;
     width: 100%;
     max-width: 480px;
-    max-height: 70vh;
+    max-height: 80vh;
     overflow-y: auto;
+    overflow-x: hidden;
+    box-sizing: border-box;
   }
   .modal h2 {
     font-size: 16px;
@@ -223,12 +225,14 @@
   }
   .provider-option {
     display: flex;
-    align-items: center;
-    justify-content: space-between;
+    flex-direction: column;
     padding: 12px;
     border: 1px solid #35363a;
     border-radius: 10px;
     margin-bottom: 8px;
+    box-sizing: border-box;
+    width: 100%;
+    overflow: hidden;
   }
   .provider-option.active {
     border-color: #3d7a54;
@@ -238,6 +242,7 @@
     display: flex;
     flex-direction: column;
     gap: 2px;
+    min-width: 0;
   }
   .provider-option .provider-label {
     font-size: 14px;
@@ -247,11 +252,13 @@
     font-size: 12px;
     color: #8a8d87;
     font-family: "SF Mono", Consolas, monospace;
+    overflow-wrap: break-word;
   }
   .provider-option .provider-status {
     font-size: 11px;
     padding: 3px 8px;
     border-radius: 20px;
+    white-space: nowrap;
   }
   .provider-status.configured {
     background: #1e2b23;
@@ -261,6 +268,19 @@
     background: #3a2b2b;
     color: #e0a07e;
   }
+  .provider-header-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .provider-header-row > div:last-child {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
   .provider-option button {
     background: #3a4a5c;
     color: white;
@@ -268,17 +288,20 @@
     border-radius: 8px;
     padding: 6px 12px;
     font-size: 12px;
+    white-space: nowrap;
   }
   .provider-option button:disabled {
     opacity: 0.3;
   }
   .api-key-row {
     display: flex;
+    flex-wrap: wrap;
     gap: 6px;
     margin-top: 10px;
   }
   .api-key-input {
-    flex: 1;
+    flex: 1 1 140px;
+    min-width: 0;
     background: #131415;
     border: 1px solid #35363a;
     border-radius: 6px;
@@ -294,6 +317,7 @@
     border-radius: 6px;
     padding: 0 12px;
     font-size: 12px;
+    flex-shrink: 0;
   }
   .btn-delete-key {
     background: #4a2b2b;
@@ -315,14 +339,21 @@
 <body>
 <div id="app">
   <header>
-    <h1><span class="dot"></span>Claudia</h1>
-    <div style="display:flex; gap:8px;">
+    <button id="project-switcher" style="background:none; border:none; color:inherit; display:flex; align-items:center; gap:6px; padding:0; text-align:left; min-width:0;">
+      <span class="dot"></span>
+      <span style="display:flex; flex-direction:column; min-width:0;">
+        <span style="font-size:17px; font-weight:600;">Claudia</span>
+        <span id="current-project-name" style="font-size:11px; color:#8a8d87; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">Загрузка...</span>
+      </span>
+    </button>
+    <div style="display:flex; gap:8px; flex-shrink:0;">
+      <button id="github-settings-btn">🔗</button>
       <button id="settings-btn">⚙️</button>
       <button id="reset-btn">Очистить</button>
     </div>
   </header>
   <div id="messages">
-    <div id="empty-state">Личный ассистент по разработке MakeApp.<br/>Напиши, с чем помочь.</div>
+    <div id="empty-state">Личный ассистент по разработке.<br/>Напиши, с чем помочь.</div>
   </div>
 
   <div id="settings-modal" class="modal-overlay" style="display:none;">
@@ -330,6 +361,35 @@
       <h2>Провайдер модели</h2>
       <div id="provider-list"></div>
       <button id="settings-close-btn" class="btn-discard" style="margin-top:12px; width:100%;">Закрыть</button>
+    </div>
+  </div>
+
+  <div id="projects-modal" class="modal-overlay" style="display:none;">
+    <div class="modal">
+      <h2>Проекты</h2>
+      <div id="projects-list"></div>
+      <div class="api-key-row" style="margin-top:12px;">
+        <input type="text" id="new-project-name" class="api-key-input" placeholder="Название нового проекта..." />
+        <button class="btn-save-key" id="create-project-btn">Создать</button>
+      </div>
+      <button id="projects-close-btn" class="btn-discard" style="margin-top:12px; width:100%;">Закрыть</button>
+    </div>
+  </div>
+
+  <div id="github-modal" class="modal-overlay" style="display:none;">
+    <div class="modal">
+      <h2>GitHub для этого проекта</h2>
+      <p style="font-size:13px; color:#8a8d87; margin-top:-8px;">Токен и репозиторий свои у каждого проекта.</p>
+      <div style="display:flex; flex-direction:column; gap:8px; margin-top:10px;">
+        <input type="text" id="github-repo-input" class="api-key-input" placeholder="owner/repo, например maks/devagent" />
+        <input type="password" id="github-token-input" class="api-key-input" placeholder="GitHub Personal Access Token" />
+      </div>
+      <div style="display:flex; gap:8px; margin-top:10px;">
+        <button class="btn-save-key" id="github-save-btn" style="flex:1;">Сохранить</button>
+        <button class="btn-delete-key" id="github-delete-btn">Удалить</button>
+      </div>
+      <div id="github-status" style="font-size:12px; color:#8a8d87; margin-top:8px;"></div>
+      <button id="github-close-btn" class="btn-discard" style="margin-top:12px; width:100%;">Закрыть</button>
     </div>
   </div>
 
@@ -373,12 +433,12 @@
         : 'нет ключа';
 
       row.innerHTML = `
-        <div style="display:flex; align-items:center; justify-content:space-between;">
+        <div class="provider-header-row">
           <div class="provider-info">
             <span class="provider-label">${escapeHtml(p.label)}</span>
             <span class="provider-model">${escapeHtml(isActive ? data.active_model : p.default_model)}</span>
           </div>
-          <div style="display:flex; align-items:center; gap:8px;">
+          <div>
             <span class="provider-status ${p.configured ? 'configured' : 'not-configured'}">${statusLabel}</span>
             ${isActive ? '' : `<button class="btn-select" ${p.configured ? '' : 'disabled'}>Выбрать</button>`}
           </div>
@@ -586,49 +646,45 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: text })
       });
-      const data = await res.json();
-      pendingEl.classList.remove('pending');
-      pendingEl.innerHTML = renderMarkdownLite(data.answer);
-      pendingEl.dataset.rawText = data.answer;
-      pendingEl.appendChild(makeCopyButton(() => pendingEl.dataset.rawText));
-      messagesEl.scrollTop = messagesEl.scrollHeight;
 
-      if (data.proposed_changes && data.proposed_changes.length > 0) {
-        data.proposed_changes.forEach(renderChangeCard);
+      if (!res.body) throw new Error('Стриминг не поддерживается браузером');
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      const toolLines = [];
+      let finalAnswer = null;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop(); // последняя строка может быть неполной — оставляем в буфере
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          const event = JSON.parse(line);
+
+          if (event.type === 'status') {
+            pendingEl.innerHTML = renderMarkdownLite(event.text);
+          } else if (event.type === 'tool_call') {
+            toolLines.push(event.text);
+            pendingEl.innerHTML = renderMarkdownLite(toolLines.join('\n') + '\n\nДумаю...');
+          } else if (event.type === 'proposed_change') {
+            renderChangeCard(event.change);
+          } else if (event.type === 'final') {
+            finalAnswer = event.answer;
+          }
+          messagesEl.scrollTop = messagesEl.scrollHeight;
+        }
       }
-    } catch (err) {
+
+      const fullText = toolLines.length > 0
+        ? toolLines.join('\n') + '\n\n' + (finalAnswer || '')
+        : (finalAnswer || '(пустой ответ)');
+
       pendingEl.classList.remove('pending');
-      pendingEl.textContent = 'Ошибка сети: ' + err.message;
-      pendingEl.dataset.rawText = 'Ошибка сети: ' + err.message;
-      pendingEl.appendChild(makeCopyButton(() => pendingEl.dataset.rawText));
-    } finally {
-      sendBtn.disabled = false;
-    }
-  }
-
-  sendBtn.addEventListener('click', sendMessage);
-  inputEl.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      sendMessage();
-    }
-  });
-
-  resetBtn.addEventListener('click', async () => {
-    if (!confirm('Очистить историю разговора?')) return;
-    await fetch('/api/reset', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ confirm: true })
-    });
-    messagesEl.innerHTML = '';
-    messagesEl.appendChild(emptyState);
-  });
-
-  // Регистрируем service worker для PWA (офлайн-оболочка, не офлайн-чат)
-  if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('/static/sw.js').catch(() => {});
-  }
-</script>
-</body>
-</html>
+      pendingEl.innerHTML = renderMarkdownLite(fullText);
+      pend
