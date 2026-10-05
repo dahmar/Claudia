@@ -70,3 +70,30 @@ def delete_api_key(provider: str) -> None:
 
 def has_api_key(provider: str) -> bool:
     return storage.get_setting(f"api_key:{provider}") is not None
+
+
+def save_project_github(project_id: str, github_repo: str, github_token: str) -> None:
+    """Шифрует и сохраняет GitHub-токен для проекта в projects.github_token_encrypted."""
+    encrypted = _get_fernet().encrypt(github_token.encode("utf-8")).decode("utf-8")
+    storage.set_project_github(project_id, github_repo, encrypted)
+
+
+def get_project_github_token(project_id: str) -> str | None:
+    """
+    Возвращает расшифрованный GitHub-токен для проекта, если он был сохранён.
+    Возвращает None, если токен не сохранён.
+    """
+    project = storage.get_project(project_id)
+    if not project or not project.get("github_token_encrypted"):
+        return None
+    try:
+        return _get_fernet().decrypt(project["github_token_encrypted"].encode("utf-8")).decode("utf-8")
+    except Exception:
+        # Ключ шифрования сменился/повреждён — считаем, что сохранённого токена нет,
+        # не роняем всё приложение из-за этого.
+        return None
+
+
+def delete_project_github(project_id: str) -> None:
+    """Удаляет GitHub-реквизиты проекта (репо и зашифрованный токен)."""
+    storage.set_project_github(project_id, None, None)
